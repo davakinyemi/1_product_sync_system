@@ -1,4 +1,4 @@
-## Functional Requirements
+## **1. Functional Requirements (WHAT)**
 
 ### **FR1: Accept product update events from Shopify**
 
@@ -157,3 +157,142 @@ Implement retry logic with exponential backoff:
 **Idempotent retry logic:** Not all failures should retry. A `400 Bad Request` (malformed data) won't fix itself - retrying is pointless. A `503 Service Unavailable` should retry.
 
 ***
+
+## **2. Non-Functional Requirements (HOW WELL)**
+
+### **NFR1: Response time < 2 secs**
+
+**Client Statement:** *"near-real-time sync"*
+
+- UX research shows 2 secs is the threshold before users perceive slowness
+- This affects operational workflows
+
+```
+User action (product update) → Sync API called → Response
+                               <---- 2 seconds ---->
+```
+
+Syncing taking 10 seconds might cause staff to update the same product twice, resulting in conflicts.
+
+- Database queries must be optimized (indexes on product_id)
+- External API calls need timeouts (don't wait forever)
+- Use asynchronous processing if sync takes longer (queue-based)
+
+Add logging: `log.info("Sync completed in {}ms", duration);`
+
+***
+
+### **NFR2: Availability 99.5% uptime**
+
+A **business decision** based on cost-benefit analysis:
+
+| Uptime | Downtime/Year | Cost to Achieve | Business Impact |
+| :-- | :-- | :-- | :-- |
+| 99% | 3.65 days | Low | High |
+| 99.5% | 1.83 days | Medium | Acceptable |
+| 99.9% | 8.76 hours | High | Low |
+| 99.99% | 52.6 minutes | Very High | Minimal |
+
+- **Cost:** Achieving 99.9% requires redundant servers, load balancers, monitoring - expensive
+- **Impact:** 1.83 days downtime spread across a year (mostly during off-peak maintenance) is acceptable
+- **SLA:** Any client that isn't Amazon - short downtimes for patches are okay
+
+```
+- Health check endpoints (`/actuator/health`)
+- Graceful shutdown (finish processing requests before restarting)
+- Error handling (one bad request shouldn't crash the server)
+```
+
+100% uptime is mathematically impossible and economically impractical. Not even AWS can guarantee 100%.
+
+***
+
+### **NFR3: Data consistency - No data loss**
+
+- Lost inventory updates = lost revenue
+- Inconsistent data = customer complaints
+
+```
+If Shopify sends: "Product A: 100 units"
+Then Salesforce MUST receive: "Product A: 100 units"
+NOT: 99 units, NOT: missing update
+```
+
+- **Database transactions:** If saving audit log fails, rollback the sync
+- **Idempotency:** Same request twice = same result (prevent duplicate syncs)
+- **Dead letter queue:** If sync fails after all retries, don't lose the data - store it for manual review
+
+```java
+@Transactional // If anything fails, rollback everything
+public void syncProduct(ProductDTO product) {
+    // 1. Save to audit log
+    // 2. Call external API
+    // 3. Update audit log with result
+    // If step 2 fails, step 1 rollback automatically
+}
+```
+
+***
+
+### **NFR4: Scalability - 1000 products, 100 syncs/hour**
+
+Hypothetical current scale:
+
+- **1000 products:** current catalog size
+- **100 syncs/hour:** Average update frequency (price changes, inventory adjustments)
+- A system handling 100 syncs/hour has different architecture than one handling 10,000/sec
+- Over-engineering is wasteful; under-engineering causes failure
+
+For this scale:
+
+- **Simple REST API is fine** (no need for Kafka, RabbitMQ)
+- **Single PostgreSQL instance works** (no need for sharding)
+- **Synchronous processing okay** (no need for complex queuing)
+
+Build for **10x current load**, not 1000x. If they grow to 10,000 products and 1,000 sync/hour, this system should handle it. If they 100x overnight (unlikely), then refactor.
+
+Refactor if:
+
+- syncs exceed 500/hour consistently
+- response times degrade
+- database queries slow down
+
+## **Constraints:**
+
+### **TC1:** Audit logs will be stored in a simple table:
+
+```sql
+CREATE TABLE sync_audit (
+    id SERIAL PRIMARY KEY,
+    timestamp TIMESTAMP,
+    product_id VARCHAR(50),
+    source_system VARCHAR(20),
+    target_system VARCHAR(20),
+    status VARCHAR(20),
+    error_message TEXT
+);
+```
+
+REST conventions:
+
+- `POST /api/products/sync` - Create/update a product sync
+- `GET /api/products/sync/{id}` - Retrieve sync status
+- `GET /api/products/sync` - List all syncs
+
+### **TC1:** Docker setup
+
+```yaml
+# docker-compose.yml
+services:
+  postgres:
+    image: postgres
+    environment:
+      POSTGRES_DB: product_sync_sys
+      
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+```
