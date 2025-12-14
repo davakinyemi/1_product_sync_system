@@ -79,6 +79,8 @@
 
 ### **Process View - Data Flow**
 
+#### **Sequence Diagram: Happy Path**
+
 ```
 Shopify          Controller       Service          Transform       SalesforceClient    Database
   │                  │               │                  │                │               │
@@ -117,7 +119,7 @@ Shopify          Controller       Service          Transform       SalesforceCli
 ```
 
 
-### **Sequence Diagram: Failure with Retry**
+#### **Sequence Diagram: Failure with Retry**
 
 ```
 Shopify          Service          SalesforceClient         RetryService         Database
