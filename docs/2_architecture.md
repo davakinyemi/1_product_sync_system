@@ -1,7 +1,5 @@
 ## **Architecture Design**
 
-***
-
 ### **Logical View: System Components**
 
 1. **REST Controller (Presentation Layer)** → receive HTTP requests from Shopify
